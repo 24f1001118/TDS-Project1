@@ -1,14 +1,23 @@
 import os
 from utils import process_image_text
 from dotenv import load_dotenv
+import re
 load_dotenv()
 
 # Path to all markdown files
-COURSE_DIR = "scraped_tds"
-DISCOURSE_DIR = "app/data/discourse"
+COURSE_DIR = "F:\iitm\python codes\TDS-Project1\scraped_tds"
+DISCOURSE_DIR = "F:\iitm\python codes\TDS-Project1\tds_discourse_posts.json"
+
+import re
+
+def extract_links(text: str) -> list[str]:
+    return re.findall(r'https?://[^\s"\')>]+', text)
 
 def read_all_markdowns(folder):
     texts = []
+    if not os.path.exists(folder):
+        print(f"❌ Folder not found: {folder}")
+        return []
     for file in os.listdir(folder):
         if file.endswith(".md"):
             with open(os.path.join(folder, file), "r", encoding="utf-8") as f:
@@ -25,36 +34,31 @@ def keyword_search(question: str, all_texts: list[str], top_k: int = 5):
     scored.sort(reverse=True, key=lambda x: x[0])
     return [text for score, text in scored[:top_k] if score > 0]
 
-def get_best_answer(question: str, image_b64: str | None = None) -> str:
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import SentenceTransformerEmbeddings
+
+def get_best_answer(question: str, image_b64: str | None = None) -> dict:
     if image_b64:
         image_text = process_image_text(image_b64)
         question += "\n\n" + image_text
 
-    all_course = read_all_markdowns(COURSE_DIR)
-    all_forum = read_all_markdowns(DISCOURSE_DIR)
-    all_texts = all_course + all_forum
+    try:
+        vectorstore = FAISS.load_local(
+            "tds_vector_db",
+            SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2"),
+            allow_dangerous_deserialization=True
+        )
+        results = vectorstore.similarity_search(question, k=3)
+        top_contexts = [doc.page_content for doc in results]
 
-    top_contexts = keyword_search(question, all_texts)
+        if not top_contexts:
+            return {"answer": "No relevant answer found.", "links": []}
 
-    context = "\n\n---\n\n".join(top_contexts)
+        final_answer = "\n\n---\n\n".join(top_contexts)
+        links = extract_links(final_answer)
 
-    prompt = f"""
-You are a helpful AI teaching assistant for the Tools in Data Science course.
-Answer the student’s question using only the context below.
+        return {"answer": final_answer.strip(), "links": links}
 
-CONTEXT:
-{context}
+    except Exception as e:
+        return {"answer": f"Error during search: {str(e)}", "links": []}
 
-QUESTION:
-{question}
-    """
-
-    # Call OpenAI
-    from openai import OpenAI
-    client = OpenAI()
-    response = client.chat.completions.create(
-        model="gpt-4o",  # or "gpt-4o-mini"
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    return response.choices[0].message.content.strip()
